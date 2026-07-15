@@ -74,9 +74,19 @@ irm https://raw.githubusercontent.com/Chris-W4ORS/ThetisQSORecorder/main/Install
 ```
 
 This downloads the recorder, checks for/offers to install PowerShell 7, and creates two Desktop
-shortcuts: **"Thetis QSO Recorder"** to run it, and **"Thetis QSO Recorder (Reconfigure)"** to redo
-setup later. Re-run the one-liner any time to update to the latest version — your saved setup isn't
-touched, since that lives separately in `%APPDATA%\ThetisQSORecorder\`.
+shortcuts:
+
+- **"Thetis QSO Recorder"** — double-click this one to actually launch it
+- **"Thetis QSO Recorder (Reconfigure)"** — only needed later, to redo setup (see [First
+  run](#first-run) below)
+
+When the one-liner finishes, the PowerShell window is done — close it, then go to your **Desktop**
+and **double-click "Thetis QSO Recorder"**. Make sure Thetis is already open with both TCI and CAT
+enabled (see above) before that first launch, so the setup wizard's connection test actually
+succeeds.
+
+Re-run the one-liner any time to update to the latest version — your saved setup isn't touched,
+since that lives separately in `%APPDATA%\ThetisQSORecorder\`.
 
 **Option B — manual:**
 
