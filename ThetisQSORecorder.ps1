@@ -308,6 +308,14 @@ if (-not $logOk) {
 }
 $script:SessionLog = Join-Path $LogFolder ("session_{0:yyyy-MM-dd_HH-mm-ss}.log" -f (Get-Date))
 
+# Prune session logs older than 5 days so the logs folder doesn't grow forever.
+# Best-effort: a failure here should never block the recorder from starting.
+try {
+    Get-ChildItem -Path $LogFolder -Filter "session_*.log" -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-5) } |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+} catch {}
+
 function Write-Log {
     param(
         [string]$Message,
@@ -691,7 +699,7 @@ function Find-WasapiDevice {
 Write-Host ""
 $txDevice = $null
 if ($TxAudioSource -eq "wasapi") {
-    Write-Host "[Devices] Locating TX capture device (B1)..." -ForegroundColor Cyan
+    Write-Host "[Devices] Locating TX capture device ('$TxDeviceSubstr')..." -ForegroundColor Cyan
     $txDevice = Find-WasapiDevice -Substr $TxDeviceSubstr -Flow "Capture"
     if (-not $txDevice) {
         Write-Error "TX device not found. Update `$TxDeviceSubstr in config section."
@@ -1419,7 +1427,7 @@ function Switch-Source {
     Update-TrayIcon -Mox $NewMox -Tooltip $null
 }
 
-# ── WASAPI TX Capture (Voicemeeter B1 — recording input device) ───────────────
+# ── WASAPI TX Capture (configured device — recording input device) ───────────
 # NOTE: $script:txCapture itself is NOT reset here — it was already created
 # during device detection (above) so its native format could be read for the
 # mono/stereo auto-detect before the MP3 writer's format was fixed. Resetting
@@ -1439,7 +1447,7 @@ $script:LevelSmoothing = 0.2   # 0..1; higher = snappier, lower = smoother
 
 if ($TxAudioSource -eq "wasapi") {
     Write-Host ""
-    Write-Host "[TX] Starting WASAPI capture on B1 input..." -ForegroundColor Cyan
+    Write-Host "[TX] Starting WASAPI capture on '$($txDevice.FriendlyName)'..." -ForegroundColor Cyan
 
     # $script:txCapture, $script:txIsFloat, $script:txBits were already set up
     # earlier (right after device detection) so the mono/stereo auto-detect
@@ -1868,7 +1876,7 @@ try {
                 # MOX state is now detected solely by CAT polling (authoritative).
 
                 # In "tci" TX mode, record the TCI stream continuously (RX and TX).
-                # In "wasapi" mode, record TCI only during RX (TX comes from B1 capture).
+                # In "wasapi" mode, record TCI only during RX (TX comes from the WASAPI capture).
                 $recordThis = if ($TxAudioSource -eq "tci") {
                     $script:isRecording
                 } else {
@@ -1924,7 +1932,7 @@ try {
             }
         }
 
-        # Drain any captured TX (B1) audio into the MP3 (wasapi mode only)
+        # Drain any captured TX audio into the MP3 (wasapi mode only)
         Drain-TxQueue
 
         # ── Diagnostic heartbeat (every 5s) — logs what the loop is seeing ────
