@@ -67,23 +67,30 @@ You only need to do this once each; Thetis remembers both settings across restar
 
 ## Install
 
-**Option A — one-liner** (recommended; opens PowerShell from the Start menu, then paste):
+**Option A — one-liner** (recommended):
+
+1. Press the **Windows key + R** together. A small "Run" box pops up.
+2. Type `powershell` into it and press **Enter**. A blue PowerShell window opens — this is where
+   the command actually runs (don't paste it into the Run box itself, it won't work there).
+3. Click inside that new blue window, paste the line below (**Ctrl+V**, or right-click), then press
+   **Enter**:
 
 ```powershell
 irm https://raw.githubusercontent.com/Chris-W4ORS/ThetisQSORecorder/main/Install.ps1 | iex
 ```
 
-This downloads the recorder, checks for/offers to install PowerShell 7, and creates two Desktop
-shortcuts:
+You'll see text scroll by as it works — checking for PowerShell 7, downloading files, creating two
+shortcuts on your Desktop. This can take anywhere from a few seconds to a couple of minutes.
+
+Once it prints `=== Install complete ===`, close that window and go to your **Desktop**. You'll see
+two new icons:
 
 - **"Thetis QSO Recorder"** — double-click this one to actually launch it
 - **"Thetis QSO Recorder (Reconfigure)"** — only needed later, to redo setup (see [First
   run](#first-run) below)
 
-When the one-liner finishes, the PowerShell window is done — close it, then go to your **Desktop**
-and **double-click "Thetis QSO Recorder"**. Make sure Thetis is already open with both TCI and CAT
-enabled (see above) before that first launch, so the setup wizard's connection test actually
-succeeds.
+Make sure Thetis is already open with both TCI and CAT enabled (see above) before that first
+launch, so the setup wizard's connection test actually succeeds.
 
 Re-run the one-liner any time to update to the latest version — your saved setup isn't touched,
 since that lives separately in `%APPDATA%\ThetisQSORecorder\`.
