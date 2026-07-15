@@ -415,16 +415,114 @@ if (-not $loaded) {
     exit 1
 }
 
+# ── TCI connect helpers ────────────────────────────────────────────────────────
+# Defined here (earlier than a first read of this file might suggest they
+# "belong") because PowerShell does NOT pre-register top-level functions
+# before a script starts running — a function statement takes effect only
+# once the interpreter actually reaches it, same as any other statement.
+# An earlier version of this script assumed the opposite ("PowerShell
+# resolves all function definitions before executing statements") and placed
+# these after the setup wizard; that produced a real
+# "Get-TciCandidateHosts is not recognized" failure the first time the
+# wizard's live TCI test ran, since the wizard (defined/invoked earlier)
+# called these before the interpreter had ever reached their definitions
+# further down the file. They now live before the wizard so they're already
+# defined by the time it needs them.
+#
+# Build an ordered list of candidate hosts to try.
+# Thetis may bind TCI to loopback OR to a specific NIC IP. We probe each.
+function Get-TciCandidateHosts {
+    $candidates = [System.Collections.Generic.List[string]]::new()
+
+    # 1. The configured host first (if user set one explicitly)
+    if ($TciHost -and $TciHost -ne "auto") { $candidates.Add($TciHost) }
+
+    # 2. Loopback
+    $candidates.Add("127.0.0.1")
+
+    # 3. Any local IPv4 that currently has a listener on $TciPort
+    #    Get-NetTCPConnection shows what Thetis is actually bound to.
+    try {
+        $listening = Get-NetTCPConnection -State Listen -LocalPort $TciPort -ErrorAction SilentlyContinue
+        foreach ($conn in $listening) {
+            $addr = $conn.LocalAddress
+            # 0.0.0.0 means "all interfaces" — loopback already covers it
+            if ($addr -and $addr -ne "0.0.0.0" -and $addr -ne "::") {
+                $candidates.Add($addr)
+            }
+        }
+    } catch {}
+
+    # 4. All active local IPv4 addresses as a fallback
+    try {
+        $localIPs = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                    Where-Object { $_.IPAddress -notlike "169.254.*" } |
+                    Select-Object -ExpandProperty IPAddress
+        foreach ($ip in $localIPs) { $candidates.Add($ip) }
+    } catch {}
+
+    # De-duplicate while preserving order
+    $seen = @{}
+    $ordered = [System.Collections.Generic.List[string]]::new()
+    foreach ($c in $candidates) {
+        if (-not $seen.ContainsKey($c)) { $seen[$c] = $true; $ordered.Add($c) }
+    }
+    return $ordered
+}
+
+function Test-TciPort {
+    param([string]$IPHost, [int]$Port, [int]$TimeoutMs = 600)
+    try {
+        $client = [System.Net.Sockets.TcpClient]::new()
+        $iar    = $client.BeginConnect($IPHost, $Port, $null, $null)
+        $ok     = $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
+        if ($ok -and $client.Connected) {
+            $client.EndConnect($iar)
+            $client.Close()
+            return $true
+        }
+        $client.Close()
+        return $false
+    } catch {
+        return $false
+    }
+}
+
+function Connect-Tci {
+    $candidates = Get-TciCandidateHosts
+    foreach ($candidate in $candidates) {
+        if (-not (Test-TciPort -IPHost $candidate -Port $TciPort)) {
+            Write-Host "  $candidate`:$TciPort — no listener" -ForegroundColor DarkGray
+            continue
+        }
+        Write-Host "  $candidate`:$TciPort — trying WebSocket..." -ForegroundColor Yellow
+        $ws = [System.Net.WebSockets.ClientWebSocket]::new()
+        # Thetis TCI expects the "tci" subprotocol. The working version negotiated it;
+        # without it Thetis streams audio but appears not to push trx/MOX state changes.
+        $ws.Options.AddSubProtocol("tci")
+        $uri = [System.Uri]::new("ws://${candidate}:${TciPort}")
+        try {
+            $ct = [System.Threading.CancellationTokenSource]::new(2000)  # 2s timeout
+            $ws.ConnectAsync($uri, $ct.Token).GetAwaiter().GetResult()
+            $script:tciWs      = $ws
+            $script:connectedTo = $candidate
+            $script:recvTask   = $null
+            $script:tciReady   = $false
+            return $true
+        } catch {
+            try { $ws.Dispose() } catch {}
+        }
+    }
+    return $false
+}
+
 # ── First-run setup wizard ─────────────────────────────────────────────────────
 # Lets this script be handed to someone else (different PC, different audio
 # devices, different folder layout) without them having to open and edit the
 # source. On first launch — or any time you run with -Reconfigure — this
 # walks through picking the TX capture device, confirming the recording
 # folder, and confirming the TCI host/port, then remembers the answers in
-# $ConfigFile so every future launch is silent. Note: Get-TciCandidateHosts
-# and Test-TciPort are defined further down in this file, but PowerShell
-# resolves all top-level function definitions in a script before executing
-# any of its statements, so calling them here (textually earlier) is fine.
+# $ConfigFile so every future launch is silent.
 function Invoke-SetupWizard {
     Write-Host ""
     Write-Host "=== Thetis QSO Recorder -- first-time setup ===" -ForegroundColor Cyan
@@ -1420,95 +1518,12 @@ function Drain-TxQueue {
 }
 
 # ── TCI WebSocket Connection (with auto-discovery of bind address) ────────────
+# Get-TciCandidateHosts / Test-TciPort / Connect-Tci were moved earlier in this
+# file (see note near the setup wizard) so the wizard's live-test can call
+# them; this is just the real connection attempt, using the config resolved
+# above.
 Write-Host ""
 Write-Host "[TCI] Discovering TCI server address on port $TciPort..." -ForegroundColor Cyan
-
-# Build an ordered list of candidate hosts to try.
-# Thetis may bind TCI to loopback OR to a specific NIC IP. We probe each.
-function Get-TciCandidateHosts {
-    $candidates = [System.Collections.Generic.List[string]]::new()
-
-    # 1. The configured host first (if user set one explicitly)
-    if ($TciHost -and $TciHost -ne "auto") { $candidates.Add($TciHost) }
-
-    # 2. Loopback
-    $candidates.Add("127.0.0.1")
-
-    # 3. Any local IPv4 that currently has a listener on $TciPort
-    #    Get-NetTCPConnection shows what Thetis is actually bound to.
-    try {
-        $listening = Get-NetTCPConnection -State Listen -LocalPort $TciPort -ErrorAction SilentlyContinue
-        foreach ($conn in $listening) {
-            $addr = $conn.LocalAddress
-            # 0.0.0.0 means "all interfaces" — loopback already covers it
-            if ($addr -and $addr -ne "0.0.0.0" -and $addr -ne "::") {
-                $candidates.Add($addr)
-            }
-        }
-    } catch {}
-
-    # 4. All active local IPv4 addresses as a fallback
-    try {
-        $localIPs = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-                    Where-Object { $_.IPAddress -notlike "169.254.*" } |
-                    Select-Object -ExpandProperty IPAddress
-        foreach ($ip in $localIPs) { $candidates.Add($ip) }
-    } catch {}
-
-    # De-duplicate while preserving order
-    $seen = @{}
-    $ordered = [System.Collections.Generic.List[string]]::new()
-    foreach ($c in $candidates) {
-        if (-not $seen.ContainsKey($c)) { $seen[$c] = $true; $ordered.Add($c) }
-    }
-    return $ordered
-}
-
-function Test-TciPort {
-    param([string]$IPHost, [int]$Port, [int]$TimeoutMs = 600)
-    try {
-        $client = [System.Net.Sockets.TcpClient]::new()
-        $iar    = $client.BeginConnect($IPHost, $Port, $null, $null)
-        $ok     = $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
-        if ($ok -and $client.Connected) {
-            $client.EndConnect($iar)
-            $client.Close()
-            return $true
-        }
-        $client.Close()
-        return $false
-    } catch {
-        return $false
-    }
-}
-
-function Connect-Tci {
-    $candidates = Get-TciCandidateHosts
-    foreach ($candidate in $candidates) {
-        if (-not (Test-TciPort -IPHost $candidate -Port $TciPort)) {
-            Write-Host "  $candidate`:$TciPort — no listener" -ForegroundColor DarkGray
-            continue
-        }
-        Write-Host "  $candidate`:$TciPort — trying WebSocket..." -ForegroundColor Yellow
-        $ws = [System.Net.WebSockets.ClientWebSocket]::new()
-        # Thetis TCI expects the "tci" subprotocol. The working version negotiated it;
-        # without it Thetis streams audio but appears not to push trx/MOX state changes.
-        $ws.Options.AddSubProtocol("tci")
-        $uri = [System.Uri]::new("ws://${candidate}:${TciPort}")
-        try {
-            $ct = [System.Threading.CancellationTokenSource]::new(2000)  # 2s timeout
-            $ws.ConnectAsync($uri, $ct.Token).GetAwaiter().GetResult()
-            $script:tciWs      = $ws
-            $script:connectedTo = $candidate
-            $script:recvTask   = $null
-            $script:tciReady   = $false
-            return $true
-        } catch {
-            try { $ws.Dispose() } catch {}
-        }
-    }
-    return $false
-}
 
 $script:tciWs        = $null
 $script:connectedTo  = $null
