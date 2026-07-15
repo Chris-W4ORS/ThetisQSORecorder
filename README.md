@@ -110,8 +110,10 @@ A short setup wizard runs automatically the first time:
 
 1. Pick which recording device carries your mic audio into Thetis, from a numbered list of
    everything Windows sees.
-2. Confirm where recordings should be saved (defaults to `Documents\ThetisQSORecorder`).
-3. Confirm the TCI host (press Enter to auto-detect) and port (default `50001`) — live-tested right
+2. Enter your callsign — used to label the tray icon, startup banner, and the recording
+   filenames themselves (e.g. `QSO_W4ORS_2026-07-15_...mp3`). Leave blank to use "Operator".
+3. Confirm where recordings should be saved (defaults to `Documents\ThetisQSORecorder`).
+4. Confirm the TCI host (press Enter to auto-detect) and port (default `50001`) — live-tested right
    there, so a typo or a not-yet-enabled TCI server is caught immediately.
 
 Every run after that is silent — you'll still get the classic "Recording folder [X], press Enter to
