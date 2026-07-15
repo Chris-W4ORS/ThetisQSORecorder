@@ -1,0 +1,19 @@
+# Personal setup — machine-specific device names, paths, and logs shouldn't be
+# committed. Anyone cloning this generates their own on first run.
+*.config.json
+logs/
+*.log
+
+# Recordings should never end up in the repo, just in case a test run lands
+# output in this folder instead of the configured recordings folder.
+*.mp3
+
+# NAudio + NAudio.Lame DLLs get downloaded locally on first run
+lib/
+
+# Windows / editor noise
+Thumbs.db
+desktop.ini
+.vs/
+.vscode/
+*.user
