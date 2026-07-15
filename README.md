@@ -12,6 +12,10 @@ the finished recording.
 - **MOX (transmit/receive) detection** uses Thetis's CAT TCP server, actively polling `ZZTX;` —
   this catches transmit state regardless of *how* you key (mouse, footswitch, hardware PTT), unlike
   relying on TCI push events alone.
+- **Resilient to drops** — if the TCI connection is lost mid-session (network blip, Thetis restart,
+  radio USB hiccup), the recorder automatically reconnects with backoff instead of ending the
+  session. TX audio and MOX detection run on independent threads and keep working the whole time,
+  so only the RX side has a brief gap rather than losing the rest of the recording.
 - A **Leveler** (slow AGC) and **Compressor/Limiter** chain keeps RX and TX at a consistent, matched
   loudness in the final file, correcting the common "TX is way louder/quieter than RX" problem.
 - Live tray icon shows current RX/TX state and levels while recording.
@@ -127,6 +131,11 @@ Thetis](#enabling-tci-in-thetis) above.
 **Recording never detects transmit (always records as RX, even while transmitting).**
 Means the CAT TCP server isn't reachable — see [Enabling the CAT (network) server in
 Thetis](#enabling-the-cat-network-server-in-thetis) above, and confirm the port matches `$CatPort`.
+
+**A brief RX gap or silence in the middle of a recording.**
+Likely a momentary TCI drop (network blip, Thetis restart) — the recorder reconnects automatically,
+so it should recover on its own within a few seconds to about a minute. Check the session log for
+`[TCI] Attempting reconnect` / `[TCI] Reconnected` entries around that timestamp to confirm.
 
 ## License
 

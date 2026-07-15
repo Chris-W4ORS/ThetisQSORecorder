@@ -1482,39 +1482,42 @@ function Test-TciPort {
     }
 }
 
-$tciWs        = $null
-$connectedTo  = $null
-$candidates   = Get-TciCandidateHosts
-
-foreach ($candidate in $candidates) {
-    # Quick TCP probe first — skip hosts with nothing listening
-    if (-not (Test-TciPort -IPHost $candidate -Port $TciPort)) {
-        Write-Host "  $candidate`:$TciPort — no listener" -ForegroundColor DarkGray
-        continue
+function Connect-Tci {
+    $candidates = Get-TciCandidateHosts
+    foreach ($candidate in $candidates) {
+        if (-not (Test-TciPort -IPHost $candidate -Port $TciPort)) {
+            Write-Host "  $candidate`:$TciPort — no listener" -ForegroundColor DarkGray
+            continue
+        }
+        Write-Host "  $candidate`:$TciPort — trying WebSocket..." -ForegroundColor Yellow
+        $ws = [System.Net.WebSockets.ClientWebSocket]::new()
+        # Thetis TCI expects the "tci" subprotocol. The working version negotiated it;
+        # without it Thetis streams audio but appears not to push trx/MOX state changes.
+        $ws.Options.AddSubProtocol("tci")
+        $uri = [System.Uri]::new("ws://${candidate}:${TciPort}")
+        try {
+            $ct = [System.Threading.CancellationTokenSource]::new(2000)  # 2s timeout
+            $ws.ConnectAsync($uri, $ct.Token).GetAwaiter().GetResult()
+            $script:tciWs      = $ws
+            $script:connectedTo = $candidate
+            $script:recvTask   = $null
+            $script:tciReady   = $false
+            return $true
+        } catch {
+            try { $ws.Dispose() } catch {}
+        }
     }
-
-    Write-Host "  $candidate`:$TciPort — trying WebSocket..." -ForegroundColor Yellow
-    $ws  = [System.Net.WebSockets.ClientWebSocket]::new()
-    # Thetis TCI expects the "tci" subprotocol. The working version negotiated it;
-    # without it Thetis streams audio but appears not to push trx/MOX state changes.
-    $ws.Options.AddSubProtocol("tci")
-    $uri = [System.Uri]::new("ws://${candidate}:${TciPort}")
-    try {
-        $ct = [System.Threading.CancellationTokenSource]::new(2000)  # 2s timeout
-        $ws.ConnectAsync($uri, $ct.Token).GetAwaiter().GetResult()
-        $tciWs       = $ws
-        $connectedTo = $candidate
-        break
-    } catch {
-        try { $ws.Dispose() } catch {}
-    }
+    return $false
 }
 
-if (-not $tciWs) {
+$script:tciWs        = $null
+$script:connectedTo  = $null
+
+if (-not (Connect-Tci)) {
     Write-Error @"
 [TCI] Could not connect to a TCI server on port $TciPort at any local address.
 
-Checked: $($candidates -join ', ')
+Checked: $((Get-TciCandidateHosts) -join ', ')
 
 Ensure in Thetis: Setup → Serial/Network/Midi CAT → Network
   • 'TCI Server Running' is checked
@@ -1524,11 +1527,24 @@ If it works, you can hardcode that address by setting `$TciHost` at the top of t
 "@
     exit 1
 }
+$tciWs       = $script:tciWs
+$connectedTo = $script:connectedTo
 
 # Update host var so the rest of the script (reconnect logic etc.) uses the right one
 $TciHost = $connectedTo
 Write-Log "[TCI] Connected to ws://${connectedTo}:${TciPort}" -Color Green
 Write-Log "[TCI] Session log: $script:SessionLog" -Color DarkGray
+
+# Reconnect state — used by the main loop if the socket drops mid-session
+# (network blip, Thetis restart, radio USB hiccup). Backoff: 3s, 6s, 12s,
+# 24s, 48s, capped at 60s; resets to the base delay as soon as a reconnect
+# succeeds. TX audio (WASAPI) and MOX detection (CAT) run on independent
+# threads, so recording continues uninterrupted on those sides the whole
+# time RX is trying to reconnect — only the RX audio has a gap.
+$script:tciReconnectBaseMs = 3000
+$script:tciReconnectMaxMs  = 60000
+$script:tciReconnectIntervalMs = $script:tciReconnectBaseMs
+$script:lastTciReconnectAttempt = [DateTime]::MinValue
 
 # ── TCI Helpers ───────────────────────────────────────────────────────────────
 function Send-TciText {
@@ -1651,14 +1667,32 @@ $recvBuffer = New-Object byte[] 65536
 $script:recvTask = $null   # single outstanding ReceiveAsync task (never abandoned)
 
 try {
-    while ($script:isRecording -and
-           $tciWs.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
+    while ($script:isRecording) {
 
         # Process tray icon clicks/menu events
         [System.Windows.Forms.Application]::DoEvents()
         if ($script:trayStopRequested) {
             Write-Host "[Recorder] Stop requested from tray icon." -ForegroundColor Yellow
             break
+        }
+
+        # ── TCI reconnect (if the socket dropped) ─────────────────────────────
+        # TX audio (WASAPI) and MOX detection (CAT) run on independent threads
+        # and keep working the whole time RX is down, so a TCI drop no longer
+        # ends the recording — just the RX side has a gap until this reconnects.
+        # Backoff: 3s, 6s, 12s, 24s, 48s, capped at 60s; resets once reconnected.
+        if (-not $script:tciWs -or $script:tciWs.State -ne [System.Net.WebSockets.WebSocketState]::Open) {
+            if (((Get-Date) - $script:lastTciReconnectAttempt).TotalMilliseconds -ge $script:tciReconnectIntervalMs) {
+                $script:lastTciReconnectAttempt = Get-Date
+                Write-Log ("[TCI] Attempting reconnect (next retry in {0}s if this fails)..." -f [int]($script:tciReconnectIntervalMs/1000)) -Color Yellow
+                if (Connect-Tci) {
+                    $tciWs = $script:tciWs
+                    Write-Log "[TCI] Reconnected to ws://${script:connectedTo}:${TciPort} — RX audio will resume once the handshake completes" -Color Green
+                    $script:tciReconnectIntervalMs = $script:tciReconnectBaseMs
+                } else {
+                    $script:tciReconnectIntervalMs = [System.Math]::Min($script:tciReconnectIntervalMs * 2, $script:tciReconnectMaxMs)
+                }
+            }
         }
 
         # ── Drain MOX changes from the CAT poll thread ─────────────────────────
@@ -1693,34 +1727,42 @@ try {
         # never abandon it. The loop stays responsive (CAT poll keeps running)
         # whether or not TCI data is flowing.
         $frame = $null
-        try {
-            # Start a receive if none is outstanding
-            if ($null -eq $script:recvTask) {
-                $seg = [System.ArraySegment[byte]]::new($recvBuffer, 0, $recvBuffer.Length)
-                $script:recvTask = $tciWs.ReceiveAsync($seg, [System.Threading.CancellationToken]::None)
-            }
-
-            # Wait briefly for the receive to complete; if not, loop on. The loop
-            # stays responsive (~50/sec) so the TX drain keeps the queue empty and
-            # MOX changes are acted on promptly, without busy-spinning the CPU.
-            if ($script:recvTask.Wait(20)) {
-                $result = $script:recvTask.GetAwaiter().GetResult()
-                $script:recvTask = $null   # consumed; next iteration starts a new one
-
-                if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
-                    Write-Warning "[TCI] Server closed the connection."
-                    break
+        if ($script:tciWs -and $script:tciWs.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
+            try {
+                # Start a receive if none is outstanding
+                if ($null -eq $script:recvTask) {
+                    $seg = [System.ArraySegment[byte]]::new($recvBuffer, 0, $recvBuffer.Length)
+                    $script:recvTask = $tciWs.ReceiveAsync($seg, [System.Threading.CancellationToken]::None)
                 }
 
-                # Single-frame read (64KB buffer holds a full audio frame). If a
-                # message ever exceeds the buffer, EndOfMessage handles the tail
-                # on subsequent iterations; for TCI audio/text this is sufficient.
-                $frame = @{ Type = $result.MessageType; Count = $result.Count; Data = $recvBuffer }
+                # Wait briefly for the receive to complete; if not, loop on. The loop
+                # stays responsive (~50/sec) so the TX drain keeps the queue empty and
+                # MOX changes are acted on promptly, without busy-spinning the CPU.
+                if ($script:recvTask.Wait(20)) {
+                    $result = $script:recvTask.GetAwaiter().GetResult()
+                    $script:recvTask = $null   # consumed; next iteration starts a new one
+
+                    if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
+                        Write-Log "[TCI] Server closed the connection -- will attempt to reconnect." -Color Yellow
+                        try { $script:tciWs.Dispose() } catch {}
+                        $script:tciWs = $null
+                        $script:recvTask = $null
+                        $script:tciReady = $false
+                    } else {
+                        # Single-frame read (64KB buffer holds a full audio frame). If a
+                        # message ever exceeds the buffer, EndOfMessage handles the tail
+                        # on subsequent iterations; for TCI audio/text this is sufficient.
+                        $frame = @{ Type = $result.MessageType; Count = $result.Count; Data = $recvBuffer }
+                    }
+                }
+                # else: still pending — fall through, loop, poll CAT, try again
+            } catch {
+                if ($script:isRecording) { Write-Log "[TCI] Receive error: $_ -- will attempt to reconnect." -Color Yellow }
+                try { if ($script:tciWs) { $script:tciWs.Dispose() } } catch {}
+                $script:tciWs = $null
+                $script:recvTask = $null
+                $script:tciReady = $false
             }
-            # else: still pending — fall through, loop, poll CAT, try again
-        } catch {
-            if ($script:isRecording) { Write-Warning "[TCI] Receive error: $_" }
-            break
         }
 
         if ($frame) {
@@ -1905,7 +1947,7 @@ try {
 
     # Stop TCI audio stream cleanly
     try {
-        if ($tciWs.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
+        if ($tciWs -and $tciWs.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
             Send-TciText "audio_stop:$TciTrxIndex;"
             $tciWs.CloseAsync(
                 [System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure,
@@ -1913,7 +1955,7 @@ try {
                 [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() | Out-Null
         }
     } catch {}
-    try { $tciWs.Dispose() } catch {}
+    try { if ($tciWs) { $tciWs.Dispose() } } catch {}
 
     # Stop CAT MOX poll thread
     try {
