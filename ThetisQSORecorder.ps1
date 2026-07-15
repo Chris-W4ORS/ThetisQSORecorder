@@ -1,7 +1,8 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-    Thetis QSO Recorder - W4ORS / HAL1
+    Thetis QSO Recorder - HAL1
+    (Banner/filenames use whatever callsign you enter in the setup wizard)
     RX audio via TCI WebSocket binary stream (float32 stereo 48kHz from Thetis DSP)
     TX audio via WASAPI capture of Voicemeeter Out B1 (post NVIDIA Broadcast +
     Voicemeeter EQ/Compressor — see chain note below)
@@ -32,6 +33,10 @@ param(
 # ─────────────────────────────────────────────────────────────────────────────
 # USER CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────────────
+$Callsign           = "W4ORS"       # used in the banner, tray icon, sign-off message, and
+                                    # output filenames (e.g. QSO_<callsign>_2026-...mp3).
+                                    # Overridden by the setup wizard on first run / -Reconfigure
+                                    # so this doesn't stay hardcoded to someone else's callsign.
 $TciHost            = "auto"        # "auto" = discover TCI bind address automatically
                                     # or set a specific IP like "127.0.0.1" / "192.168.0.10"
 $TciPort            = 50001
@@ -326,7 +331,7 @@ trap {
 # ── Banner ────────────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "╔══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║    Thetis QSO Recorder  •  W4ORS / HAL1                 ║" -ForegroundColor Cyan
+Write-Host "║    Thetis QSO Recorder  •  $Callsign / HAL1                 ║" -ForegroundColor Cyan
 Write-Host "║    RX: TCI audio stream  |  TX: WASAPI loopback  |  MP3 ║" -ForegroundColor Cyan
 Write-Host "╚══════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
@@ -554,6 +559,11 @@ function Invoke-SetupWizard {
     }
 
     Write-Host ""
+    $callsignIn = Read-Host "Your callsign (used to label the recording files and tray icon)"
+    $chosenCallsign = if ([string]::IsNullOrWhiteSpace($callsignIn)) { "Operator" } else { $callsignIn.Trim().ToUpper() }
+    Write-Host "Using: $chosenCallsign" -ForegroundColor Green
+
+    Write-Host ""
     Write-Host "Where should recordings be saved?" -ForegroundColor Cyan
     $defaultFolder = if ($OutputFolder) { $OutputFolder } else { Join-Path $env:USERPROFILE "Documents\ThetisQSORecorder" }
     $folderIn = Read-Host "Folder path [$defaultFolder]"
@@ -601,6 +611,7 @@ function Invoke-SetupWizard {
     }
 
     $config = [ordered]@{
+        Callsign             = $chosenCallsign
         TxDeviceFriendlyName = $chosenDeviceName
         OutputFolder         = $chosenFolder
         TciHost              = $tciHostVal
@@ -612,7 +623,7 @@ function Invoke-SetupWizard {
     Write-Host ""
     Write-Host "Saved -- this won't ask again unless you run with -Reconfigure." -ForegroundColor Green
     Write-Host ""
-    Write-Log "Setup wizard complete: TxDevice='$chosenDeviceName' OutputFolder='$chosenFolder' TciHost=$tciHostVal TciPort=$tciPortVal"
+    Write-Log "Setup wizard complete: Callsign=$chosenCallsign TxDevice='$chosenDeviceName' OutputFolder='$chosenFolder' TciHost=$tciHostVal TciPort=$tciPortVal"
     return $config
 }
 
@@ -631,13 +642,14 @@ if ($Reconfigure -or -not (Test-Path $ConfigFile)) {
 }
 
 if ($script:setupConfig) {
+    if ($script:setupConfig.Callsign)             { $Callsign      = $script:setupConfig.Callsign }
     if ($script:setupConfig.TxDeviceFriendlyName) { $TxDeviceSubstr = $script:setupConfig.TxDeviceFriendlyName }
     if ($script:setupConfig.OutputFolder)         { $OutputFolder   = $script:setupConfig.OutputFolder }
     $TciHost = $script:setupConfig.TciHost
     $TciPort = [int]$script:setupConfig.TciPort
-    Write-Log "Active config: TxDevice='$TxDeviceSubstr' OutputFolder='$OutputFolder' TciHost=$TciHost TciPort=$TciPort"
+    Write-Log "Active config: Callsign=$Callsign TxDevice='$TxDeviceSubstr' OutputFolder='$OutputFolder' TciHost=$TciHost TciPort=$TciPort"
 } else {
-    Write-Warning "No configuration available -- falling back to the built-in defaults (TxDeviceSubstr='$TxDeviceSubstr', TciHost='$TciHost', TciPort=$TciPort)."
+    Write-Warning "No configuration available -- falling back to the built-in defaults (Callsign='$Callsign', TxDeviceSubstr='$TxDeviceSubstr', TciHost='$TciHost', TciPort=$TciPort)."
     Write-Log "No config available -- using built-in script defaults" -Color Yellow
 }
 
@@ -759,7 +771,7 @@ try {
 }
 
 $timestamp  = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
-$outputFile = [System.IO.Path]::Combine($OutputFolder, "QSO_W4ORS_$timestamp.mp3")
+$outputFile = [System.IO.Path]::Combine($OutputFolder, "QSO_${Callsign}_$timestamp.mp3")
 $waveFormat = [NAudio.Wave.WaveFormat]::new($SampleRate, 16, $Channels)
 
 Write-Host ""
@@ -819,7 +831,7 @@ $script:trayIcon.Text    = "Thetis QSO Recorder — starting…"   # tooltip (ma
 
 # Right-click context menu with Stop
 $trayMenu = New-Object System.Windows.Forms.ContextMenuStrip
-$miStatus = $trayMenu.Items.Add("Thetis QSO Recorder — W4ORS")
+$miStatus = $trayMenu.Items.Add("Thetis QSO Recorder — $Callsign")
 $miStatus.Enabled = $false
 $trayMenu.Items.Add("-") | Out-Null
 $miStop   = $trayMenu.Items.Add("Stop && Save Recording")
@@ -2026,5 +2038,5 @@ try {
     } else {
         Write-Host "[Recorder] No recording was created." -ForegroundColor DarkYellow
     }
-    Write-Host "[Recorder] Done. 73 de W4ORS" -ForegroundColor Cyan
+    Write-Host "[Recorder] Done. 73 de $Callsign" -ForegroundColor Cyan
 }
