@@ -57,8 +57,12 @@ $Channels           = 2             # Stereo
 # MP3 settings
 $Mp3BitRate         = 128           # kbps — 128 stereo = ~57MB/hr, 64 = ~28MB/hr
 
-# Output folder — default; you'll be prompted at startup to confirm or change it
-$OutputFolder       = "E:\Chris\Music\Thetis\ThetisQSORecorder"
+# Output folder — default; you'll be prompted at startup to confirm or change it.
+# Portable default (Documents\ThetisQSORecorder under whoever's running this) --
+# NOT hardcoded to a specific person's drive/folder layout, since the wizard's
+# own "suggest a default" logic only falls back to a portable path when this
+# is empty, and a literal personal path here would always win over that.
+$OutputFolder       = Join-Path $env:USERPROFILE "Documents\ThetisQSORecorder"
 
 # ── TX audio source ───────────────────────────────────────────────────────────
 # "tci"    = record the TCI binary stream during TX too (TX monitor/sidetone, if
@@ -331,7 +335,13 @@ trap {
 # ── Banner ────────────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "╔══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║    Thetis QSO Recorder  •  $Callsign / HAL1                 ║" -ForegroundColor Cyan
+# Banner box is 60 chars wide (╔ + 58 + ╗). Callsign is now variable-length
+# (used to be a fixed "W4ORS"), so pad/truncate the middle line dynamically
+# instead of a fixed literal string, or the right-hand border drifts out of
+# alignment for anyone with a longer or shorter callsign.
+$bannerLine = "  Thetis QSO Recorder  -  $Callsign / HAL1"
+if ($bannerLine.Length -gt 58) { $bannerLine = $bannerLine.Substring(0, 58) }
+Write-Host ("║{0,-58}║" -f $bannerLine) -ForegroundColor Cyan
 Write-Host "║    RX: TCI audio stream  |  TX: WASAPI loopback  |  MP3 ║" -ForegroundColor Cyan
 Write-Host "╚══════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
