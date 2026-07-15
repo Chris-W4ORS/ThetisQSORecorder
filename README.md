@@ -23,6 +23,11 @@ the finished recording.
 Everything lands as a single timestamped MP3 per session, automatically renamed with the operating
 frequency once the session ends.
 
+> **Tip:** pair this with [Thetis Custom VU Meter](https://github.com/Chris-W4ORS/Thetis-Custom-VU-Meter) —
+> a live RX/TX level display for Thetis. Run it alongside the recorder (or just before a session) to
+> confirm your mic gain and RX levels are actually landing in a good range before you commit to a
+> recording, rather than finding out after the fact.
+
 ## Requirements
 
 | | |
